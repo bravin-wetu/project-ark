@@ -56,6 +56,76 @@ Once activated, you can immediately:
 
 ---
 
+## 🛠️ Installation & Starting the Application
+
+### Prerequisites
+
+- PHP 8.2+
+- Composer
+- Node.js & npm
+- MySQL 8.0+
+
+### Installation Steps
+
+```bash
+# 1. Clone the repository
+git clone <repository-url>
+cd project-ark
+
+# 2. Install PHP dependencies
+composer install
+
+# 3. Install Node.js dependencies
+npm install
+
+# 4. Copy environment file and configure
+cp .env.example .env
+
+# 5. Generate application key
+php artisan key:generate
+
+# 6. Configure your database in .env
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=project_ark
+DB_USERNAME=root
+DB_PASSWORD=your_password
+
+# 7. Create the database
+mysql -u root -p -e "CREATE DATABASE project_ark;"
+
+# 8. Run migrations and seed the database
+php artisan migrate --seed
+
+# 9. Build frontend assets
+npm run build
+```
+
+### Starting the Application
+
+```bash
+# Start the Laravel development server
+php artisan serve
+
+# In a separate terminal, start Vite for hot-reloading (development)
+npm run dev
+```
+
+The application will be available at: **http://localhost:8000**
+
+### Running Tests
+
+```bash
+# Run all tests
+php artisan test
+
+# Or using Pest directly
+./vendor/bin/pest
+```
+
+---
+
 ## 2️⃣ Business Objectives
 
 1. Enforce strict budget discipline
@@ -501,19 +571,19 @@ The system is considered complete when:
 
 ### Sprint 7: Assets & Inventory
 
-- [ ] **7.1** Asset model & migrations
-- [ ] **7.2** Stock model & migrations
-- [ ] **7.3** Asset registration from receipt
-- [ ] **7.4** Stock batch creation
-- [ ] **7.5** Asset/Stock listing in workspace
+- [x] **7.1** Asset model & migrations
+- [x] **7.2** Stock model & migrations
+- [x] **7.3** Asset registration from receipt
+- [x] **7.4** Stock batch creation
+- [x] **7.5** Asset/Stock listing in workspace
 
 ### Sprint 8: Reporting & Polish
 
-- [ ] **8.1** Executive dashboard stats
-- [ ] **8.2** Budget utilization reports
-- [ ] **8.3** Audit trail logging
-- [ ] **8.4** Export functionality (PDF/Excel)
-- [ ] **8.5** UI polish & responsive design
+- [x] **8.1** Executive dashboard stats
+- [x] **8.2** Budget utilization reports
+- [x] **8.3** Audit trail logging
+- [x] **8.4** Export functionality (PDF/Excel)
+- [x] **8.5** UI polish & responsive design
 
 ---
 
@@ -527,8 +597,8 @@ The system is considered complete when:
 | Sprint 4 | ✅ Complete | 100% |
 | Sprint 5 | ✅ Complete | 100% |
 | Sprint 6 | ✅ Complete | 100% |
-| Sprint 7 | ⏳ Pending | 0% |
-| Sprint 8 | ⏳ Pending | 0% |
+| Sprint 7 | ✅ Complete | 100% |
+| Sprint 8 | ✅ Complete | 100% |
 
 ---
 
@@ -550,5 +620,6 @@ This system will serve as:
 > The Financial Control Backbone of WeTu
 
 It will enforce discipline, transparency, accountability, and institutional maturity.
-#   p r o j e c t - a r k  
+#   p r o j e c t - a r k 
+ 
  

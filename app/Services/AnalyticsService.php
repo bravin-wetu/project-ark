@@ -57,7 +57,7 @@ class AnalyticsService
                 ->count();
 
             // Supplier metrics
-            $activeSuppliers = Supplier::where('is_active', true)->count();
+            $activeSuppliers = Supplier::where('status', Supplier::STATUS_ACTIVE)->count();
 
             // Calculate overall utilization
             $totalBudget = $projectBudget + $departmentBudget;
@@ -132,25 +132,29 @@ class AnalyticsService
     {
         return Cache::remember('budget_util_by_project', $this->cacheDuration, function () use ($limit) {
             return Project::where('status', 'active')
-                ->where('allocated', '>', 0)
-                ->orderByDesc('allocated')
-                ->take($limit)
+                ->with('budgetLines')
                 ->get()
                 ->map(function ($project) {
-                    $utilization = $project->allocated > 0 
-                        ? round(($project->spent / $project->allocated) * 100, 1) 
-                        : 0;
+                    $allocated = $project->budgetLines->sum('allocated');
+                    $spent = $project->budgetLines->sum('spent');
                     return [
                         'id' => $project->id,
                         'name' => $project->name,
                         'code' => $project->code,
-                        'allocated' => $project->allocated,
-                        'spent' => $project->spent,
-                        'available' => $project->allocated - $project->spent,
-                        'utilization' => $utilization,
-                        'status' => $this->getUtilizationStatus($utilization),
+                        'allocated' => $allocated,
+                        'spent' => $spent,
+                        'available' => $allocated - $spent,
+                        'utilization' => $allocated > 0 ? round(($spent / $allocated) * 100, 1) : 0,
                     ];
-                });
+                })
+                ->filter(fn($p) => $p['allocated'] > 0)
+                ->sortByDesc('allocated')
+                ->take($limit)
+                ->map(function ($project) {
+                    $project['status'] = $this->getUtilizationStatus($project['utilization']);
+                    return $project;
+                })
+                ->values();
         });
     }
 
@@ -161,26 +165,29 @@ class AnalyticsService
     {
         return Cache::remember('budget_util_by_dept', $this->cacheDuration, function () use ($limit) {
             return DepartmentBudget::where('status', 'active')
-                ->where('allocated', '>', 0)
-                ->with('department')
-                ->orderByDesc('allocated')
-                ->take($limit)
+                ->with(['department', 'budgetLines'])
                 ->get()
                 ->map(function ($budget) {
-                    $utilization = $budget->allocated > 0 
-                        ? round(($budget->spent / $budget->allocated) * 100, 1) 
-                        : 0;
+                    $allocated = $budget->budgetLines->sum('allocated');
+                    $spent = $budget->budgetLines->sum('spent');
                     return [
                         'id' => $budget->id,
                         'name' => $budget->department->name ?? 'Unknown',
                         'fiscal_year' => $budget->fiscal_year,
-                        'allocated' => $budget->allocated,
-                        'spent' => $budget->spent,
-                        'available' => $budget->allocated - $budget->spent,
-                        'utilization' => $utilization,
-                        'status' => $this->getUtilizationStatus($utilization),
+                        'allocated' => $allocated,
+                        'spent' => $spent,
+                        'available' => $allocated - $spent,
+                        'utilization' => $allocated > 0 ? round(($spent / $allocated) * 100, 1) : 0,
                     ];
-                });
+                })
+                ->filter(fn($b) => $b['allocated'] > 0)
+                ->sortByDesc('allocated')
+                ->take($limit)
+                ->map(function ($budget) {
+                    $budget['status'] = $this->getUtilizationStatus($budget['utilization']);
+                    return $budget;
+                })
+                ->values();
         });
     }
 
@@ -197,14 +204,17 @@ class AnalyticsService
         return Cache::remember($cacheKey, $this->cacheDuration, function () use ($startDate, $endDate) {
             return DB::table('purchase_order_items')
                 ->join('purchase_orders', 'purchase_order_items.purchase_order_id', '=', 'purchase_orders.id')
+                ->leftJoin('requisition_items', 'purchase_order_items.requisition_item_id', '=', 'requisition_items.id')
+                ->leftJoin('requisitions', 'requisition_items.requisition_id', '=', 'requisitions.id')
+                ->leftJoin('budget_lines', 'requisitions.budget_line_id', '=', 'budget_lines.id')
+                ->leftJoin('budget_categories', 'budget_lines.budget_category_id', '=', 'budget_categories.id')
                 ->select(
-                    'purchase_order_items.category',
+                    'budget_categories.name as category',
                     DB::raw('SUM(purchase_order_items.quantity * purchase_order_items.unit_price) as total')
                 )
                 ->whereBetween('purchase_orders.created_at', [$startDate, $endDate])
                 ->whereNotIn('purchase_orders.status', ['cancelled', 'rejected'])
-                ->whereNotNull('purchase_order_items.category')
-                ->groupBy('purchase_order_items.category')
+                ->groupBy('budget_categories.name')
                 ->orderByDesc('total')
                 ->get()
                 ->map(function ($item) {
@@ -405,8 +415,13 @@ class AnalyticsService
 
         return Cache::remember($cacheKey, $this->cacheDuration, function () use ($startDate, $endDate) {
             // Get monthly budgets (simplified - using total allocated divided by months)
-            $totalBudget = Project::where('status', 'active')->sum('allocated') + 
-                           DepartmentBudget::where('status', 'active')->sum('allocated');
+            $projectBudget = BudgetLine::whereHasMorph('budgetable', [Project::class], function ($query) {
+                    $query->where('status', 'active');
+                })->sum('allocated');
+            $departmentBudget = BudgetLine::whereHasMorph('budgetable', [DepartmentBudget::class], function ($query) {
+                    $query->where('status', 'active');
+                })->sum('allocated');
+            $totalBudget = $projectBudget + $departmentBudget;
 
             $period = CarbonPeriod::create($startDate, '1 month', $endDate);
             $monthCount = iterator_count($period);

@@ -12,6 +12,7 @@ use App\Models\StockItem;
 use App\Models\StockBatch;
 use App\Models\Supplier;
 use App\Models\BudgetLine;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -356,26 +357,166 @@ class ReportController extends Controller
     public function exportPdf(Project $project, Request $request)
     {
         $reportType = $request->query('report', 'budget');
+        $startDate = $request->query('start_date', $project->start_date ?? now()->startOfYear());
+        $endDate = $request->query('end_date', $project->end_date ?? now());
         
-        // For now, redirect to print view which can be printed to PDF
-        return redirect()->route('projects.reports.' . $reportType, [
-            'project' => $project,
-            'print' => true,
-            'start_date' => $request->query('start_date'),
-            'end_date' => $request->query('end_date'),
-        ]);
+        $filename = str_replace(' ', '_', $project->name) . "_{$reportType}_report_" . now()->format('Y-m-d') . ".pdf";
+        
+        switch ($reportType) {
+            case 'budget':
+                $pdf = $this->generateBudgetPdf($project, $startDate, $endDate);
+                break;
+            case 'procurement':
+                $pdf = $this->generateProcurementPdf($project, $startDate, $endDate);
+                break;
+            case 'assets':
+                $pdf = $this->generateAssetsPdf($project);
+                break;
+            default:
+                return redirect()->back()->with('error', 'Invalid report type');
+        }
+        
+        return $pdf->download($filename);
     }
 
     /**
-     * Export report to Excel (CSV format, no package required)
+     * Generate Budget PDF
+     */
+    protected function generateBudgetPdf(Project $project, $startDate, $endDate)
+    {
+        $budgetLines = BudgetLine::where('budgetable_type', Project::class)
+            ->where('budgetable_id', $project->id)
+            ->get()
+            ->map(function ($line) {
+                $line->committed = $line->purchaseOrderItems()
+                    ->whereHas('purchaseOrder', fn($q) => $q->whereNotIn('status', ['cancelled', 'rejected']))
+                    ->sum(DB::raw('quantity * unit_price'));
+                
+                $line->spent = $line->purchaseOrderItems()
+                    ->whereHas('purchaseOrder', fn($q) => $q->whereIn('status', ['completed', 'closed']))
+                    ->sum(DB::raw('quantity * unit_price'));
+                
+                return $line;
+            });
+        
+        $totals = [
+            'allocated' => $budgetLines->sum('allocated_amount'),
+            'committed' => $budgetLines->sum('committed'),
+            'spent' => $budgetLines->sum('spent'),
+            'available' => $budgetLines->sum('allocated_amount') - $budgetLines->sum('committed'),
+        ];
+        
+        return Pdf::loadView('projects.reports.pdf.budget', compact(
+            'project', 'budgetLines', 'totals', 'startDate', 'endDate'
+        ))->setPaper('a4', 'portrait');
+    }
+
+    /**
+     * Generate Procurement PDF
+     */
+    protected function generateProcurementPdf(Project $project, $startDate, $endDate)
+    {
+        $purchaseOrders = PurchaseOrder::where('purchaseable_type', Project::class)
+            ->where('purchaseable_id', $project->id)
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->with('supplier')
+            ->latest()
+            ->get();
+        
+        $stats = [
+            'total_requisitions' => Requisition::where('requisitionable_type', Project::class)
+                ->where('requisitionable_id', $project->id)
+                ->whereBetween('created_at', [$startDate, $endDate])
+                ->count(),
+            'total_rfqs' => \App\Models\Rfq::where('rfqable_type', Project::class)
+                ->where('rfqable_id', $project->id)
+                ->whereBetween('created_at', [$startDate, $endDate])
+                ->count(),
+            'total_pos' => $purchaseOrders->count(),
+            'total_spend' => $purchaseOrders->whereIn('status', ['completed', 'closed'])->sum('total_amount'),
+        ];
+        
+        $spendByCategory = PurchaseOrder::where('purchaseable_type', Project::class)
+            ->where('purchaseable_id', $project->id)
+            ->whereIn('status', ['completed', 'closed'])
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->join('purchase_order_items', 'purchase_orders.id', '=', 'purchase_order_items.purchase_order_id')
+            ->join('budget_lines', 'purchase_order_items.budget_line_id', '=', 'budget_lines.id')
+            ->select('budget_lines.category', DB::raw('SUM(purchase_order_items.quantity * purchase_order_items.unit_price) as total'))
+            ->groupBy('budget_lines.category')
+            ->get();
+        
+        return Pdf::loadView('projects.reports.pdf.procurement', compact(
+            'project', 'purchaseOrders', 'stats', 'spendByCategory', 'startDate', 'endDate'
+        ))->setPaper('a4', 'portrait');
+    }
+
+    /**
+     * Generate Assets PDF
+     */
+    protected function generateAssetsPdf(Project $project)
+    {
+        $assets = Asset::forProject($project->id)
+            ->with(['hub'])
+            ->orderBy('asset_tag')
+            ->get();
+        
+        $stats = [
+            'total' => $assets->count(),
+            'active' => $assets->where('status', 'active')->count(),
+            'in_maintenance' => $assets->where('status', 'in_maintenance')->count(),
+            'disposed' => $assets->where('status', 'disposed')->count(),
+            'total_value' => $assets->sum('acquisition_cost'),
+        ];
+        
+        return Pdf::loadView('projects.reports.pdf.assets', compact(
+            'project', 'assets', 'stats'
+        ))->setPaper('a4', 'landscape');
+    }
+
+    /**
+     * Export report to Excel
      */
     public function exportExcel(Project $project, Request $request)
+    {
+        $reportType = $request->query('report', 'budget');
+        $startDate = $request->query('start_date', $project->start_date ?? now()->startOfYear());
+        $endDate = $request->query('end_date', $project->end_date ?? now());
+        
+        $filename = str_replace(' ', '_', $project->name) . "_{$reportType}_report_" . now()->format('Y-m-d') . ".xlsx";
+        
+        switch ($reportType) {
+            case 'budget':
+                return \Maatwebsite\Excel\Facades\Excel::download(
+                    new \App\Exports\BudgetReportExport($project, $startDate, $endDate),
+                    $filename
+                );
+            case 'procurement':
+                return \Maatwebsite\Excel\Facades\Excel::download(
+                    new \App\Exports\ProcurementReportExport($project, $startDate, $endDate),
+                    $filename
+                );
+            case 'assets':
+                return \Maatwebsite\Excel\Facades\Excel::download(
+                    new \App\Exports\AssetsReportExport($project),
+                    $filename
+                );
+            default:
+                // Fallback to CSV for other types
+                return $this->exportCsv($project, $request);
+        }
+    }
+
+    /**
+     * Export report to CSV (fallback)
+     */
+    public function exportCsv(Project $project, Request $request)
     {
         $reportType = $request->query('report', 'budget');
         $startDate = $request->query('start_date', now()->startOfYear());
         $endDate = $request->query('end_date', now());
         
-        $filename = "{$project->name}_{$reportType}_report_" . now()->format('Y-m-d') . ".csv";
+        $filename = str_replace(' ', '_', $project->name) . "_{$reportType}_report_" . now()->format('Y-m-d') . ".csv";
         
         $headers = [
             'Content-Type' => 'text/csv',
